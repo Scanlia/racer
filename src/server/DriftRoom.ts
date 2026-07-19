@@ -76,7 +76,11 @@ export class DriftRoom extends Room<DriftState> {
 
   onCreate(): void {
     this.setState(new DriftState())
-    this.setPatchRate(50) // 20 Hz
+    // 30 Hz. The client interpolates 120ms behind, so at 20 Hz that buffer was only
+    // 2.4 patches deep and ordinary jitter emptied it, leaving remotes to freeze and
+    // then snap. At 30 Hz it is 3.6 deep for a few hundred bytes/s more per client,
+    // which matters most for the cop: he is the one remote everybody is watching.
+    this.setPatchRate(33) // 30 Hz
     this.map = parseMap()
 
     // --- the cop: a PlayerState like any other, so clients render him via the
@@ -116,6 +120,8 @@ export class DriftRoom extends Room<DriftState> {
 
     this.onMessage('cop:chat', async (client, text: string) => {
       if (!this.interrogation || client.sessionId !== this.frozenId) return
+      const typing = this.sims.get(client.sessionId)
+      if (typing) typing.lastSeen = Date.now() // answering Bram is proof of life
       const active = this.interrogation
       const turn = await active.playerSays(String(text ?? ''))
       // the stop may have ended while the model was thinking (clock, disconnect)
@@ -156,6 +162,12 @@ export class DriftRoom extends Room<DriftState> {
   private sweepStale(): void {
     const now = Date.now()
     for (const [id, sim] of this.sims) {
+      // The interrogated player is SUPPOSED to be silent: the client stops sending
+      // input the moment the chat opens, so input silence here means "talking to
+      // Bram", not "dead socket". Sweeping them booked every stop 20s into a 540s
+      // conversation. The chat clock still bounds this (timeLeft() <= 0 forces a
+      // verdict in tick()), and onLeave still books anyone who really disconnects.
+      if (id === this.frozenId && this.interrogation) continue
       if (now - sim.lastSeen < STALE_MS) continue
       console.log(`[room] dropping stale client ${id} (${((now - sim.lastSeen) / 1000).toFixed(0)}s silent)`)
       const client = this.clients.find((cl) => cl.sessionId === id)
@@ -341,6 +353,10 @@ export class DriftRoom extends Room<DriftState> {
       sim.score = makeScore() // points seized
       this.copBrain.immunity.set(this.frozenId, ARREST_IMMUNITY)
     }
+    // The stop just spent up to 9 minutes with no input packets. Without this the
+    // player is already 9 minutes "stale" the instant the sweep exemption lifts and
+    // the next sweep drops them a second after being released.
+    if (sim) sim.lastSeen = Date.now()
     this.broadcast('cop:verdict', { id: this.frozenId, verdict })
     this.interrogation = null
     this.frozenId = ''

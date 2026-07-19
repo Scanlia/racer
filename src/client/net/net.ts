@@ -10,6 +10,8 @@ export interface RemoteSnapshot {
   x: number
   z: number
   yaw: number
+  vx: number
+  vz: number
   speed: number
   slip: number
 }
@@ -47,7 +49,11 @@ export interface CopTurnMsg {
   score?: number
 }
 
-const INTERP_DELAY = 0.12 // s behind server time (two 20 Hz snapshots)
+const INTERP_DELAY = 0.12 // s behind server time (3.6 snapshots at the 30 Hz patch rate)
+// How far we will carry a remote on dead reckoning when the next patch is late.
+// Long enough to ride out ordinary jitter, short enough that a real stall parks
+// him instead of sailing him through a wall on stale velocity.
+const MAX_EXTRAPOLATION = 0.25 // s
 
 export class NetClient {
   room: Room | null = null
@@ -132,6 +138,15 @@ export class NetClient {
     }
   }
 
+  // The interrogation stops input entirely (prediction must not fight the server's
+  // freeze), which to the room looks exactly like a dead socket. An empty batch
+  // refreshes lastSeen without queueing a frame, so a player sitting quietly
+  // reading Bram is still visibly alive.
+  keepalive(): void {
+    if (!this.room || !this.connected) return
+    this.room.send('input', [])
+  }
+
   horn(): void {
     this.room?.send('horn')
   }
@@ -188,7 +203,7 @@ export class NetClient {
     const players = this.room.state?.players
     if (!players?.forEach) return
     const seen = new Set<string>()
-    players.forEach((p: Record<string, never> & { x: number; z: number; yaw: number; speed: number; slip: number; brake: boolean; handbrake: boolean; headlights: boolean; drifting: boolean; score: number; rpm: number; car: number; name: string; bot: number; copMode: number; pinT: number; copTarget: string }, id: string) => {
+    players.forEach((p: Record<string, never> & { x: number; z: number; yaw: number; vx: number; vz: number; speed: number; slip: number; brake: boolean; handbrake: boolean; headlights: boolean; drifting: boolean; score: number; rpm: number; car: number; name: string; bot: number; copMode: number; pinT: number; copTarget: string }, id: string) => {
       seen.add(id)
       if (id === this.myId) return
       let r = this.remotes.get(id)
@@ -203,7 +218,8 @@ export class NetClient {
       }
       const last = r.snapshots[r.snapshots.length - 1]
       if (!last || last.x !== p.x || last.z !== p.z || last.yaw !== p.yaw) {
-        r.snapshots.push({ t: now, x: p.x, z: p.z, yaw: p.yaw, speed: p.speed, slip: p.slip })
+        // vx/vz ride along so a late patch can be dead-reckoned rather than frozen
+        r.snapshots.push({ t: now, x: p.x, z: p.z, yaw: p.yaw, vx: p.vx ?? 0, vz: p.vz ?? 0, speed: p.speed, slip: p.slip })
         if (r.snapshots.length > 20) r.snapshots.shift()
       }
       r.brake = p.brake
@@ -228,7 +244,8 @@ export class NetClient {
     for (const r of this.remotes.values()) {
       const snaps = r.snapshots
       if (!snaps.length) continue
-      let a = snaps[0], b = snaps[snaps.length - 1]
+      const newest = snaps[snaps.length - 1]
+      let a = snaps[0], b = newest
       for (let i = 0; i < snaps.length - 1; i++) {
         if (snaps[i].t <= target && snaps[i + 1].t >= target) {
           a = snaps[i]
@@ -236,13 +253,20 @@ export class NetClient {
           break
         }
       }
-      if (b.t <= target || a === b) {
-        // extrapolate slightly from the newest snapshot
-        r.x = b.x
-        r.z = b.z
-        r.yaw = b.yaw
+      if (newest.t <= target) {
+        // Buffer underrun: the next patch is late. Holding position and snapping
+        // when it lands is exactly what reads as the cop stuttering, so carry him
+        // forward on his last known velocity instead.
+        const ahead = Math.min(target - newest.t, MAX_EXTRAPOLATION)
+        r.x = newest.x + newest.vx * ahead
+        r.z = newest.z + newest.vz * ahead
+        r.yaw = newest.yaw
       } else {
-        const k = (target - a.t) / Math.max(b.t - a.t, 1e-4)
+        // Clamped: a buffer spanning less than INTERP_DELAY (fresh join, reconnect,
+        // or a remote that just started moving again) leaves target before snaps[0],
+        // and an unclamped k is negative there — it extrapolated BACKWARDS along the
+        // path, which is the jump you see for a moment after every reconnect.
+        const k = Math.max(0, Math.min(1, (target - a.t) / Math.max(b.t - a.t, 1e-4)))
         r.x = a.x + (b.x - a.x) * k
         r.z = a.z + (b.z - a.z) * k
         let dy = b.yaw - a.yaw
@@ -250,8 +274,8 @@ export class NetClient {
         while (dy < -Math.PI) dy += Math.PI * 2
         r.yaw = a.yaw + dy * k
       }
-      r.speed = b.speed
-      r.slip = b.slip
+      r.speed = newest.speed
+      r.slip = newest.slip
     }
   }
 }
