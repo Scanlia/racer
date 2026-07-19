@@ -19,6 +19,13 @@
     #hud-toast.show { opacity: 1; }
     #hud-toast.good { color: #a5ffb0; }
     #hud-toast.bad { color: #ff7a6b; }
+    /* near-miss popups: stack under the toast line, drift up and fade */
+    #hud-pops { position: absolute; top: 34%; left: 50%; transform: translateX(-50%); text-align: center; }
+    .hud-pop { font-size: 16px; letter-spacing: 2px; animation: hud-pop-float 1.3s ease-out forwards; }
+    .hud-pop.wall { color: #7fd4ff; }
+    .hud-pop.car { color: #ffd28a; }
+    .hud-pop.cop { color: #ff9d5c; font-size: 19px; }
+    @keyframes hud-pop-float { 0% { opacity: 0; transform: translateY(8px); } 15% { opacity: 1; } 70% { opacity: 1; } 100% { opacity: 0; transform: translateY(-26px); } }
     #hud-gauge { position: absolute; bottom: 22px; left: 24px; width: 200px; height: 200px; }
     #hud-players { margin-top: 12px; font-size: 12px; color: #9aa1c4; letter-spacing: 1px; }
     #hud-players div { display: flex; justify-content: flex-end; gap: 14px; line-height: 1.9; }
@@ -45,6 +52,7 @@
     #cop-banner { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; font-size: 26px; letter-spacing: 5px; text-shadow: 2px 2px 0 #000; }
     #cop-banner.show { display: flex; }
     #cop-banner.release { color: #a5ffb0; }
+    #cop-banner.fine { color: #ffd28a; background: rgba(0,0,0,.55); }
     #cop-banner.arrest { color: #ff7a6b; background: rgba(0,0,0,.72); animation: cop-flash .5s steps(2) 1; }
     @keyframes cop-flash { 0% { background: #fff; } 100% { background: rgba(0,0,0,.72); } }
     /* pin bar: how long he's had you cornered. Screen-space on your own HUD —
@@ -55,6 +63,15 @@
       text-shadow: 1px 1px 0 #000; margin-bottom: 5px; }
     #cop-pin div { height: 12px; border: 1px solid #2a2f4a; background: rgba(6,8,18,.85); padding: 1px; }
     #cop-pin i { display: block; height: 100%; width: 0%; transition: width .08s linear; }
+
+    /* the police band: Bram's pursuit lines, bottom-right above the help row */
+    #radio-band { position: fixed; right: 28px; bottom: 34px; width: min(320px, 40vw);
+      font-family: var(--pix); background: rgba(6,8,18,.88); border: 1px solid #2a2f4a;
+      padding: 8px 12px; opacity: 0; transform: translateY(6px); transition: opacity .3s, transform .3s;
+      pointer-events: none; z-index: 15; }
+    #radio-band.show { opacity: 1; transform: none; }
+    #radio-band u { display: block; font-size: 9px; letter-spacing: 3px; color: #6b79b8; text-decoration: none; margin-bottom: 5px; }
+    #radio-band div { font-size: 13px; line-height: 1.5; color: #8fb4ff; text-shadow: 1px 1px 0 #000; }
 
     #debug-panel { position: fixed; top: 12px; left: 12px; width: 320px; max-height: 92vh; overflow-y: auto; background: rgba(6,8,18,.92); border: 1px solid #2a2f4a; padding: 10px 12px; font-family: var(--pix); font-size: 11px; color: #aeb3d0; z-index: 20; }
     #debug-panel .dbg-title { color: #ffd28a; margin-bottom: 8px; letter-spacing: 2px; }
@@ -77,6 +94,17 @@
     #join #start { background: #35204f; color: #cbb8ef; border: 1px solid #5a3f82; padding: 12px 44px; font-family: var(--pix); font-size: 17px; letter-spacing: 4px; cursor: pointer; margin-top: 8px; }
     #join #start:hover { background: #4a2d71; color: #e6dcff; }
     #join .status { color: #62688a; font-size: 11px; height: 14px; }
+    /* the wanted list: best drivers on the village record, right-hand side */
+    #join-board { position: absolute; right: 3.5vw; top: 32vh; width: min(250px, 26vw);
+      background: rgba(6,8,18,.85); border: 1px solid #2a2f4a; padding: 12px 14px; }
+    #join-board u { display: block; font-size: 10px; letter-spacing: 2px; color: #ffd28a;
+      text-decoration: none; margin-bottom: 9px; }
+    #join-board-rows div { display: flex; gap: 7px; align-items: baseline; font-size: 11px;
+      color: #9aa1c4; line-height: 1.9; }
+    #join-board-rows b { color: #62688a; font-weight: normal; width: 16px; }
+    #join-board-rows .n { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #join-board-rows .s { color: #7fd4ff; }
+    #join-board-rows .x { color: #ff7a6b; font-size: 10px; min-width: 22px; text-align: right; }
   </style>
 </head>
 <body>

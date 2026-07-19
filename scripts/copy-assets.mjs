@@ -4,8 +4,9 @@ import { cpSync, mkdirSync, existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const out = join(root, 'game', 'public', 'assets')
+const repo = join(dirname(fileURLToPath(import.meta.url)), '..')
+const root = join(repo, 'assets-src') // in-repo archive of the source packs
+const out = join(repo, 'public', 'assets')
 
 const copies = [
   // roads (updated pack: includes signs + embedded textures)
@@ -49,6 +50,7 @@ const copies = [
   // landmarks
   ['3d models/misc_models/tower.fbx', 'landmarks/tower.fbx'],
   ['3d models/misc_models/gazebo.fbx', 'landmarks/gazebo.fbx'],
+  ['3d models/misc_models/stone', 'landmarks/stone'], // benches for the village green
   ['3d models/hedge_maze_pack/textures', 'landmarks/tex'],
   // music
   ['background sounds/background-loop.mp3', 'audio/background-loop.mp3'],

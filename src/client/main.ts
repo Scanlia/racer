@@ -16,7 +16,7 @@ import { parseMap } from '../shared/map'
 import { makeCarState, stepCar, copyCarState, collideCarKinematic, CarState, InputFrame } from '../shared/physics'
 import { InputShaper, RawInput } from '../shared/input'
 import { TUNING, PHYS_DT, CAR_WIDTH, CAR_LENGTH } from '../shared/constants'
-import { makeScore, stepScore } from '../shared/scoring'
+import { makeScore, stepScore, stepNearMiss } from '../shared/scoring'
 import { NetClient, RemotePlayer } from './net/net'
 import { CARS, DEFAULT_CAR } from '../shared/cars'
 import { PIN_TIME } from '../shared/police'
@@ -36,8 +36,29 @@ function showJoin(): Promise<void> {
       <div class="cars">${CARS.map((c, i) => `<button data-i="${i}" class="${i === DEFAULT_CAR ? 'sel' : ''}"><i style="background:${c.swatch}"></i>${c.label}</button>`).join('')}</div>
       <button id="start">DRIVE</button>
       <div class="status" id="join-status"></div>
+      <div id="join-board" style="display:none"><u>MILLBROOK — MOST WANTED</u><div id="join-board-rows"></div></div>
     `
     document.body.appendChild(el)
+
+    // tonight's wanted list, straight off the server's village record
+    ;(async () => {
+      try {
+        const isViteDev = location.port === '5173' || location.port === '5174'
+        const base = isViteDev ? `${location.protocol}//${location.hostname || 'localhost'}:2567` : ''
+        const res = await fetch(base + '/leaderboard')
+        const data = (await res.json()) as { top: Array<{ name: string; bestTotal: number; bestChain: number; arrests: number }> }
+        if (!data.top?.length) return
+        const rows = document.getElementById('join-board-rows')
+        const board = document.getElementById('join-board')
+        if (!rows || !board) return // already past the join screen
+        rows.innerHTML = data.top
+          .map((e, i) =>
+            `<div><b>${i + 1}.</b><span class="n">${escapeJoin(e.name)}</span><span class="s">${e.bestTotal}</span>` +
+            `<span class="x">${e.arrests > 0 ? '⛓' + e.arrests : ''}</span></div>`)
+          .join('')
+        board.style.display = 'block'
+      } catch { /* server asleep — the board just stays hidden */ }
+    })()
     el.querySelectorAll('.cars button').forEach((b) => {
       b.addEventListener('click', () => {
         el.querySelectorAll('.cars button').forEach((x) => x.classList.remove('sel'))
@@ -57,6 +78,10 @@ function showJoin(): Promise<void> {
     document.getElementById('start')!.addEventListener('click', start)
     window.addEventListener('keydown', onKey)
   })
+}
+
+function escapeJoin(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
 }
 
 // ---------- boot ----------
@@ -140,7 +165,7 @@ async function boot(): Promise<void> {
 
   // remote car visuals, created lazily as players appear (the cop is just a remote
   // with bot === 1 — same interpolation path, different model + a light bar)
-  interface RemoteVis { model: CarModel; rig: HeadlightRig; tag: HTMLElement; bar?: LightBar }
+  interface RemoteVis { model: CarModel; rig: HeadlightRig; tag: HTMLElement | null; bar?: LightBar }
   const remoteVis = new Map<string, RemoteVis>()
   const pending = new Set<string>()
   const tagLayer = document.createElement('div')
@@ -156,11 +181,15 @@ async function boot(): Promise<void> {
       const rig = new HeadlightRig(CAR_WIDTH, CAR_LENGTH)
       scene.add(model.group)
       scene.add(rig.group)
-      const tag = document.createElement('div')
-      tag.style.position = 'absolute'
-      tag.textContent = r.name
-      if (isCop) tag.style.color = '#8fb4ff'
-      tagLayer.appendChild(tag)
+      // civilians drive anonymously — no floating tag over the night shift
+      let tag: HTMLElement | null = null
+      if (r.name) {
+        tag = document.createElement('div')
+        tag.style.position = 'absolute'
+        tag.textContent = r.name
+        if (isCop) tag.style.color = '#8fb4ff'
+        tagLayer.appendChild(tag)
+      }
       const v: RemoteVis = { model, rig, tag }
       if (isCop) {
         v.bar = new LightBar(CAR_LENGTH)
@@ -186,6 +215,21 @@ async function boot(): Promise<void> {
     audio.sirenChirp()
     if (id === net.myId) hud.toast('POLICE — PULL OVER', 'bad')
   }
+  // the police band: Bram's pursuit lines crackle in bottom-right
+  const radioBand = document.createElement('div')
+  radioBand.id = 'radio-band'
+  radioBand.innerHTML = '<u>POLICE BAND</u><div></div>'
+  const radioLine = radioBand.querySelector('div') as HTMLElement
+  document.body.appendChild(radioBand)
+  let radioTimer = 0
+  net.onCopRadio = (text) => {
+    audio.radioCrackle()
+    radioLine.textContent = text
+    radioBand.classList.add('show')
+    window.clearTimeout(radioTimer)
+    radioTimer = window.setTimeout(() => radioBand.classList.remove('show'), 6500)
+  }
+
   let copMood = 0 // last disposition, to hear which way his mood swung
   net.onCopOpen = (turn) => {
     frozen = true
@@ -200,12 +244,12 @@ async function boot(): Promise<void> {
     copMood = turn.disposition
     copChat.say(turn)
   }
-  net.onCopVerdict = (id, verdict) => {
-    if (id !== net.myId) return
-    copChat.verdict(verdict, Math.floor(score.total))
+  net.onCopVerdict = (msg) => {
+    if (msg.id !== net.myId) return
+    copChat.verdict(msg.verdict, msg.seized, msg.charm)
     audio.setInterrogation(false)
-    if (verdict === 'arrest') {
-      score.total = 0
+    score.total = msg.total // server truth after any seizure
+    if (msg.verdict === 'arrest') {
       score.chain = 0
       score.multiplier = 1
     }
@@ -431,13 +475,21 @@ async function boot(): Promise<void> {
         })
       }
       stepScore(score, car, PHYS_DT)
+      // near misses: local mirror of the server pass, for the instant popup
+      stepNearMiss(score, car, PHYS_DT, map.colliders,
+        [...net.remotes.values()].map((r) => ({ id: r.id, x: r.x, z: r.z, bot: r.bot })))
+      if (score.nearMiss) {
+        const nm = score.nearMiss
+        hud.popup((nm.kind === 'cop' ? 'COP TEASE' : nm.kind === 'car' ? 'TRAFFIC' : 'NEAR MISS') + ' +' + nm.pts, nm.kind)
+        audio.nearMiss(nm.kind === 'wall' ? 0.7 : 1)
+      }
       if (!frozen) net.sendInput(shapedInput)
       if (car.wallHit > 2.5) audio.crash(car.wallHit)
       // player list (self + remotes), refreshed twice a second
       if (seq % 30 === 0) {
         hud.setPlayers([
           { name: playerName, score: Math.floor(score.total), me: true },
-          ...[...net.remotes.values()].filter((r) => r.bot !== 1).map((r) => ({ name: r.name, score: r.score, me: false })), // the cop isn't competing
+          ...[...net.remotes.values()].filter((r) => r.bot === 0).map((r) => ({ name: r.name, score: r.score, me: false })), // bots aren't competing
         ])
       }
 
@@ -553,13 +605,15 @@ async function boot(): Promise<void> {
           }
         }
         // name tag above the car
-        const sp = new THREE.Vector3(r.x, map.heightAt(r.x, r.z) + 2.2, r.z).project(camera)
-        if (sp.z < 1) {
-          v.tag.style.display = 'block'
-          v.tag.style.left = ((sp.x * 0.5 + 0.5) * window.innerWidth - 20) + 'px'
-          v.tag.style.top = ((-sp.y * 0.5 + 0.5) * window.innerHeight) + 'px'
-        } else {
-          v.tag.style.display = 'none'
+        if (v.tag) {
+          const sp = new THREE.Vector3(r.x, map.heightAt(r.x, r.z) + 2.2, r.z).project(camera)
+          if (sp.z < 1) {
+            v.tag.style.display = 'block'
+            v.tag.style.left = ((sp.x * 0.5 + 0.5) * window.innerWidth - 20) + 'px'
+            v.tag.style.top = ((-sp.y * 0.5 + 0.5) * window.innerHeight) + 'px'
+          } else {
+            v.tag.style.display = 'none'
+          }
         }
       }
       for (const [id, v] of remoteVis) {
@@ -567,7 +621,7 @@ async function boot(): Promise<void> {
           scene.remove(v.model.group)
           scene.remove(v.rig.group)
           if (v.bar) scene.remove(v.bar.group)
-          v.tag.remove()
+          v.tag?.remove()
           remoteVis.delete(id)
         }
       }

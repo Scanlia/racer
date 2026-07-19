@@ -42,9 +42,17 @@ export interface CopTurnMsg {
   reply: string
   mood: string
   disposition: number // drives the happy/annoyed sting — never rendered as a number
-  verdict: 'pending' | 'release' | 'arrest'
+  verdict: 'pending' | 'release' | 'fine' | 'arrest'
   timeLimit?: number
   score?: number
+}
+
+export interface CopVerdictMsg {
+  id: string
+  verdict: 'release' | 'fine' | 'arrest'
+  charm: boolean // released while genuinely charmed — he owes you one
+  seized: number
+  total: number // authoritative post-verdict session total
 }
 
 const INTERP_DELAY = 0.12 // s behind server time (two 20 Hz snapshots)
@@ -58,8 +66,9 @@ export class NetClient {
   onHorn: (id: string) => void = () => {}
   onCopAggro: (id: string) => void = () => {}
   onCopOpen: (turn: CopTurnMsg) => void = () => {}
+  onCopRadio: (text: string) => void = () => {}
   onCopReply: (turn: CopTurnMsg) => void = () => {}
-  onCopVerdict: (id: string, verdict: 'release' | 'arrest') => void = () => {}
+  onCopVerdict: (msg: CopVerdictMsg) => void = () => {}
   getSpawn: (() => { x: number; z: number }) | null = null // current car pos, used to rejoin in place
 
   private pending: InputFrame[] = []
@@ -91,8 +100,9 @@ export class NetClient {
       this.room.onMessage('horn', (msg: { id: string }) => this.onHorn(msg.id))
       this.room.onMessage('cop:aggro', (msg: { id: string }) => this.onCopAggro(msg.id))
       this.room.onMessage('cop:open', (msg: CopTurnMsg) => this.onCopOpen(msg))
+      this.room.onMessage('cop:radio', (msg: { text: string }) => this.onCopRadio(msg.text))
       this.room.onMessage('cop:reply', (msg: CopTurnMsg) => this.onCopReply(msg))
-      this.room.onMessage('cop:verdict', (msg: { id: string; verdict: 'release' | 'arrest' }) => this.onCopVerdict(msg.id, msg.verdict))
+      this.room.onMessage('cop:verdict', (msg: CopVerdictMsg) => this.onCopVerdict(msg))
       this.room.onLeave(() => {
         // dead room: stop reconciling against its frozen state (it would pin the car
         // in place) and quietly rejoin — the dev server restarts whenever shared physics change

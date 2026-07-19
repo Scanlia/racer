@@ -60,8 +60,9 @@ console.log(`pursuit 25s: dist ${Math.hypot(cop.x - p.x, cop.z - p.z).toFixed(1)
 ;(async () => {
   const it = new Interrogation({
     impactSpeedKmh: 43, hitWhileParked: true, chaseDurationS: 6, playerTopSpeedKmh: 120,
-    priorOffenses: 1, sessionScore: 4200, playerCarColor: 'red', playerName: 'reece',
-    locationNow: 'the village lane, past the houses', escapeAttempted: true,
+    priorOffenses: 1, priorArrests: 0, sessionScore: 4200, playerCarColor: 'red', playerCarKind: 'estate',
+    playerName: 'reece', locationNow: 'the village lane, past the houses', escapeAttempted: true,
+    headlightsOff: false, teasedCop: true,
   })
   console.log(`\n--- interrogation (${process.env.ANTHROPIC_API_KEY ? 'live API' : 'scripted fallback — no ANTHROPIC_API_KEY'}) ---`)
   console.log(`opening disposition ${it.disposition}/100`)

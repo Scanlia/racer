@@ -191,12 +191,14 @@ export interface CopStepResult {
   pinnedNow: boolean // pin condition held this step
 }
 
-// One brain step. `players` = live sims (id → CarState). Mutates brain. Pure of Math.random.
+// One brain step. `players` = live sims (id → CarState). `civilians` = traffic cars
+// he must not rear-end on patrol. Mutates brain. Pure of Math.random.
 export function stepCopBrain(
   brain: CopBrain,
   cop: CarState,
   players: Map<string, CarState>,
   dt: number,
+  civilians?: CarState[],
 ): CopStepResult {
   brain.tick++
   for (const [id, t] of brain.immunity) {
@@ -341,6 +343,7 @@ export function stepCopBrain(
       pz += -tSin * 0.7 * side
     }
     input.steer = steerToward(cop, px, pz, 2.6)
+    const headingErr = Math.abs(wrapAngle(Math.atan2(px - cop.x, pz - cop.z) - cop.yaw))
 
     // rubber band: hungrier when far, politer when breathing down the neck
     const band = d > 80 ? 1.08 : d < 15 ? 0.95 : 1
@@ -349,6 +352,14 @@ export function stepCopBrain(
     // this he charges a parked target at 160 km/h forever and can never pin.
     let want = PURSUIT_SPEED * band
     if (d < 25) want = Math.min(want, Math.abs(target.speed) + d * 0.35)
+    // Authority over pace. Full throttle on grass with the wheel at the stop is a
+    // power-slide orbit AWAY from the target (wheelspin kills rear grip, the front
+    // plows, and he circles at 25 km/h forever — measured). Grass caps his speed;
+    // a target far off-heading means slow down and actually come around.
+    const onGrass = cop.surfRL === 'offroad' || cop.surfRR === 'offroad'
+    if (onGrass) want = Math.min(want, 10)
+    if (headingErr > 1.2) want = Math.min(want, 7)
+    else if (headingErr > 0.6) want = Math.min(want, 16)
     const sc = speedControl(cop, want)
     input.throttle = sc.throttle
     input.brake = sc.brake
@@ -402,7 +413,19 @@ export function stepCopBrain(
     curve += Math.abs(wrapAngle(h - prevH))
     prevH = h
   }
-  const targetSpeed = PATROL_SPEED * clamp(1 - curve * 0.3, 0.42, 1)
+  let targetSpeed = PATROL_SPEED * clamp(1 - curve * 0.3, 0.42, 1)
+  // queue behind slow civilian traffic instead of shunting it down the lane
+  // (pursuit doesn't take this branch — sirens mean barging is in character)
+  if (civilians?.length) {
+    const cFwdX = Math.sin(cop.yaw), cFwdZ = Math.cos(cop.yaw)
+    for (const o of civilians) {
+      const dx = o.x - cop.x, dz = o.z - cop.z
+      const ahead = dx * cFwdX + dz * cFwdZ
+      if (ahead < 2 || ahead > 16) continue
+      if (Math.abs(dx * cFwdZ - dz * cFwdX) > 3.2) continue
+      targetSpeed = Math.min(targetSpeed, ahead < 6 ? 0 : Math.abs(o.speed) * 0.9 + (ahead - 6) * 0.5)
+    }
+  }
 
   const aim = pointAhead(brain, cop, clamp(5 + Math.abs(cop.speed) * 0.85, 6, 20))
   input.steer = steerToward(cop, aim.x, aim.z)

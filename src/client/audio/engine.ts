@@ -288,6 +288,23 @@ export class GameAudio {
     this.playOneShot(this.brakeBuf, 0.5)
   }
 
+  // short static blip announcing a police-band transmission (routes to master —
+  // the scanner is not part of the car and must cut through a pursuit)
+  radioCrackle(): void {
+    if (!this.staticBuf) return
+    const t = this.ctx.currentTime
+    const src = this.ctx.createBufferSource()
+    src.buffer = this.staticBuf
+    const g = this.ctx.createGain()
+    g.gain.setValueAtTime(0.0001, t)
+    g.gain.exponentialRampToValueAtTime(0.3, t + 0.04)
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.4)
+    src.connect(g)
+    g.connect(this.master)
+    src.start(t)
+    src.stop(t + 0.45)
+  }
+
   // --- police ---
   // `dist` in metres from the local car; the siren fades out past ~90 m.
   updateSiren(active: boolean, dist: number): void {
@@ -367,6 +384,32 @@ export class GameAudio {
     g.connect(this.vehicleBus)
     o.start(t)
     o.stop(t + 0.5)
+  }
+
+  // the near-miss whoosh: a fast air swell right past the window
+  nearMiss(gain = 1): void {
+    if (!this.ready) return
+    const ctx = this.ctx
+    const t = ctx.currentTime
+    const dur = 0.28
+    const buf = ctx.createBuffer(1, ctx.sampleRate * dur, ctx.sampleRate)
+    const d = buf.getChannelData(0)
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1
+    const src = ctx.createBufferSource()
+    src.buffer = buf
+    const f = ctx.createBiquadFilter()
+    f.type = 'bandpass'
+    f.Q.value = 1.2
+    f.frequency.setValueAtTime(420, t)
+    f.frequency.exponentialRampToValueAtTime(1600, t + dur * 0.6)
+    const g = ctx.createGain()
+    g.gain.setValueAtTime(0.0001, t)
+    g.gain.exponentialRampToValueAtTime(0.16 * gain, t + 0.07)
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur)
+    src.connect(f)
+    f.connect(g)
+    g.connect(this.vehicleBus)
+    src.start(t)
   }
 
   crash(intensity: number): void {
