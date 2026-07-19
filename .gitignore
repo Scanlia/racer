@@ -1,7 +1,9 @@
 node_modules
 public/assets
 build
+dist
 .colyseus-cloud.json
 .DS_Store
 .env
 .env.*
+data/

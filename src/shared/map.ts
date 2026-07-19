@@ -1,32 +1,46 @@
 // The map IS a text grid (Part 2 §B.2). One char per TILE. Road piece + rotation are
 // inferred from the 4-neighborhood, so the loop can be redrawn freely.
-// Chars: '.' grass · road tiles carry their zone: v=village, e=hedge lanes, p=fields, w=forest.
+// Chars: '.' grass · road tiles carry their zone: v=village, e=hedge lanes, p=fields,
+// w=forest, g=the all-night gas station strip.
 // Everything (visuals, lamps, props, collision, surfaces) derives from this one grid,
 // so the server never loads a model.
+//
+// One main loop (the patrol ring / elevation walk find it themselves) plus three
+// dead-end spurs off T junctions: the village cul-de-sac, the gas station pull-in,
+// and the field track down to the wreck.
 import { TILE } from './constants'
 import { AABB, SurfaceSampler } from './physics'
 
 export const MAP_TEXT = `
-........................
-........................
-...vvvvvvvvv............
-...v.......v............
-...v.......v............
-...v.......eeee.........
-...v..........e.........
-...w..........e.........
-...w..........eeeee.....
-...w..............e.....
-...w..............e.....
-...w..............e.....
-...ww.............e.....
-....w.........ppppe.....
-....w.........p.........
-....wwwwwwwwwwp.........
-........................
+.................................
+...vvvvvvvvv.........g...........
+...v...v...v.........g...........
+...v...v...v.....ggggggggg.......
+...v...v...v.....g.......g.......
+...v.......vvvvvvg.......g.......
+...w.....................g.......
+...w.....................e.......
+...w.....................e.......
+...w...............eeeeeee.......
+...w...............e.............
+...w...............e.............
+...wwww............e.............
+......w............eeeeeeeeep....
+......w.....................p....
+......w.....................p....
+......w.....................p....
+......w.....................p....
+......w.....................p....
+......w.....................p....
+......w.....................p....
+......w.......wpppppppppppppp....
+......w.......w.....p............
+......w.......w.....p............
+......wwwwwwwww..................
+.................................
 `.trim()
 
-export type Zone = 'v' | 'e' | 'p' | 'w'
+export type Zone = 'v' | 'e' | 'p' | 'w' | 'g'
 export type Piece = 'straight' | 'corner' | 't' | 'cross' | 'end'
 
 export interface RoadTile {
@@ -52,7 +66,7 @@ export interface Lamp {
 }
 
 export interface Prop {
-  kind: 'house' | 'hedge' | 'tree_big' | 'tree_small' | 'bush' | 'fence' | 'cone' | 'sign' | 'parked' | 'tower' | 'rock' | 'wreck' | 'lampProp' | 'gas'
+  kind: 'house' | 'hedge' | 'tree_big' | 'tree_small' | 'bush' | 'fence' | 'cone' | 'sign' | 'parked' | 'tower' | 'rock' | 'wreck' | 'lampProp' | 'gas' | 'gazebo' | 'bench'
   x: number; z: number
   rot: number
   variant: number
@@ -130,7 +144,7 @@ export function parseMap(): ParsedMap {
   const W = Math.max(...grid.map((r) => r.length))
   const at = (gx: number, gz: number): string =>
     gz >= 0 && gz < H && gx >= 0 && gx < (grid[gz]?.length ?? 0) ? grid[gz][gx] : '.'
-  const isRoad = (c: string) => c === 'v' || c === 'e' || c === 'p' || c === 'w'
+  const isRoad = (c: string) => c === 'v' || c === 'e' || c === 'p' || c === 'w' || c === 'g'
 
   const tiles: RoadTile[] = []
   const tileMap = new Map<string, RoadTile>()
@@ -181,10 +195,8 @@ export function parseMap(): ParsedMap {
     }
   }
 
-  // validate: no dangling ends (a drawn loop should be closed)
-  for (const t of tiles) {
-    if (t.piece === 'end') console.warn(`map: dangling road at ${t.gx},${t.gz}`)
-  }
+  // 'end' tiles are legal now (spur tips get Road_End caps); a MALFORMED map shows
+  // up as a short loop below, not as a dangling end here.
 
   // --- surface sampling: distance to the tile's road-arm segments ---
   const surfaceAt: SurfaceSampler = (x, z) => {
@@ -236,34 +248,73 @@ export function parseMap(): ParsedMap {
     return 'offroad'
   }
 
-  // --- elevation: a rise-and-fall profile along the far half of the loop ---
-  // Walk the loop (every tile is degree-2), assign heights to the shared tile
-  // edges from a raised-cosine profile, then flatten corners so the rigid
-  // corner pieces never have to twist. Straights carry all the slope.
+  // --- elevation: a rise-and-fall profile along the country half of the loop ---
+  // Find the MAIN loop by DFS (spurs dead-end and backtrack out), assign heights to
+  // the shared tile edges from a raised-cosine profile, then flatten corners so the
+  // rigid corner pieces never have to twist. Straights carry all the slope.
+  const neighborsOf = (t: RoadTile): RoadTile[] => {
+    const nb: RoadTile[] = []
+    if (t.dirs.n) nb.push(tileMap.get(t.gx + ',' + (t.gz - 1))!)
+    if (t.dirs.s) nb.push(tileMap.get(t.gx + ',' + (t.gz + 1))!)
+    if (t.dirs.e) nb.push(tileMap.get(t.gx + 1 + ',' + t.gz)!)
+    if (t.dirs.w) nb.push(tileMap.get(t.gx - 1 + ',' + t.gz)!)
+    return nb.filter(Boolean)
+  }
   const order: RoadTile[] = []
   {
     const start = tiles.find((t) => t.zone === 'v' && t.piece === 'straight') ?? tiles[0]
-    let prev: RoadTile | null = null
-    let cur: RoadTile | undefined = start
-    for (let i = 0; i < tiles.length + 1 && cur; i++) {
-      order.push(cur)
-      const nb: RoadTile[] = []
-      if (cur.dirs.n) nb.push(tileMap.get(cur.gx + ',' + (cur.gz - 1))!)
-      if (cur.dirs.s) nb.push(tileMap.get(cur.gx + ',' + (cur.gz + 1))!)
-      if (cur.dirs.e) nb.push(tileMap.get(cur.gx + 1 + ',' + cur.gz)!)
-      if (cur.dirs.w) nb.push(tileMap.get(cur.gx - 1 + ',' + cur.gz)!)
-      const next = nb.filter(Boolean).find((t) => t !== prev)
-      prev = cur
-      cur = next === start ? undefined : next
+    // DFS for a cycle back to start. Junction tiles have 3+ arms; branches that
+    // dead-end (the spurs) simply backtrack, so `order` ends up as the closed ring.
+    const path: RoadTile[] = [start]
+    const visited = new Set<RoadTile>([start])
+    const dfs = (cur: RoadTile, prev: RoadTile | null): boolean => {
+      for (const n of neighborsOf(cur)) {
+        if (n === prev) continue
+        if (n === start && path.length >= 8) return true
+        if (visited.has(n)) continue
+        visited.add(n)
+        path.push(n)
+        if (dfs(n, cur)) return true
+        path.pop()
+        visited.delete(n)
+      }
+      return false
     }
+    if (!dfs(start, null)) console.warn('map: no closed loop found — check MAP_TEXT')
+    order.push(...path)
     const N = order.length
     const HMAX = 5.5
-    // edge i sits between order[i] and order[(i+1)%N]
-    const edgeH: number[] = []
-    for (let i = 0; i < N; i++) {
-      const s2 = (i + 0.5) / N
-      const t2 = (s2 - 0.35) / 0.5
-      edgeH.push(t2 > 0 && t2 < 1 ? HMAX * 0.5 * (1 - Math.cos(2 * Math.PI * t2)) : 0)
+
+    // The hill lives on the longest run of forest/field tiles that stays clear of
+    // junctions (spurs sit at elevation 0 — a sloped T would step visibly).
+    const nearJunction: boolean[] = order.map((t, i) => {
+      for (let k = -3; k <= 3; k++) {
+        const o = order[(i + k + N) % N]
+        if (o.piece === 't' || o.piece === 'cross') return true
+      }
+      return false
+    })
+    const candidate = order.map((t, i) => (t.zone === 'w' || t.zone === 'p') && !nearJunction[i])
+    // longest circular run of candidates
+    let runStart = 0, runLen = 0
+    {
+      let bestS = 0, bestL = 0, s = -1, l = 0
+      for (let i = 0; i < N * 2; i++) {
+        if (candidate[i % N]) {
+          if (s < 0) s = i
+          l++
+          if (l > bestL && l <= N) { bestL = l; bestS = s }
+        } else { s = -1; l = 0 }
+      }
+      runStart = bestS % N
+      runLen = Math.min(bestL, N)
+    }
+    // edge i sits between order[i] and order[(i+1)%N]; raised cosine over the run
+    const edgeH: number[] = new Array(N).fill(0)
+    for (let k = 0; k < runLen - 1; k++) {
+      const s2 = (k + 0.5) / (runLen - 1)
+      const t2 = (s2 - 0.1) / 0.8
+      if (t2 > 0 && t2 < 1) edgeH[(runStart + k) % N] = HMAX * 0.5 * (1 - Math.cos(2 * Math.PI * t2))
     }
     // flatten corner tiles: both of a corner's edges take their average
     for (let pass = 0; pass < 3; pass++) {
@@ -411,6 +462,17 @@ export function parseMap(): ParsedMap {
     }
 
     if (t.zone === 'e') {
+      // the hedge corridor: walls both sides of straights (soft colliders — brushing
+      // a hedge scrubs speed, it doesn't total the car). Prime near-miss territory.
+      if (t.piece === 'straight') {
+        for (const side of [-1, 1]) {
+          if (hash2(t.gx, t.gz, side + 80) > 0.85) continue // the odd gate gap
+          const hx = along === 'ns' ? t.x + side * (CURB_HALF + 1.0) : t.x
+          const hz = along === 'ns' ? t.z : t.z + side * (CURB_HALF + 1.0)
+          props.push({ kind: 'hedge', x: hx, z: hz, rot: along === 'ns' ? 0 : Math.PI / 2, variant: 0 })
+          colliders.push(box(hx, hz, along === 'ns' ? 1.0 : TILE / 2, along === 'ns' ? TILE / 2 : 1.0, true))
+        }
+      }
       // open country lanes: sparse trees set well back (visual only)
       for (const side of [-1, 1]) {
         if (hash2(t.gx, t.gz, side + 50) > 0.55) continue
@@ -434,6 +496,32 @@ export function parseMap(): ParsedMap {
         const head = lampHead(lx, lz, t.x, t.z)
         lamps.push({ x: head.hx, z: head.hz, color: COOLWHITE, radius: 15, intensity: 0.9, height: 6.0 })
         props.push({ kind: 'lampProp', x: lx, z: lz, rot: head.rot, variant: 1 })
+      }
+      // wooden field fences along straights (visual dressing, no collider —
+      // running wide into a field should cost speed, not the car)
+      if (t.piece === 'straight') {
+        for (const side of [-1, 1]) {
+          if (hash2(t.gx, t.gz, side + 70) > 0.6) continue
+          const fx = along === 'ns' ? t.x + side * (CURB_HALF + 1.6) : t.x
+          const fz = along === 'ns' ? t.z : t.z + side * (CURB_HALF + 1.6)
+          props.push({ kind: 'fence', x: fx, z: fz, rot: along === 'ns' ? 0 : Math.PI / 2, variant: Math.floor(hash2(t.gx, t.gz, 71) * 8) })
+        }
+      }
+    }
+
+    if (t.zone === 'g') {
+      // the all-night strip: bright cool light, twice the lamp density of the fields
+      if ((t.gx + t.gz) % 2 === 0) {
+        const side = lampAlt++ % 2 === 0 ? 1 : -1
+        const lx = along === 'ns' ? t.x + side * (CURB_HALF - 0.6) : t.x
+        const lz = along === 'ns' ? t.z : t.z + side * (CURB_HALF - 0.6)
+        const head = lampHead(lx, lz, t.x, t.z)
+        lamps.push({ x: head.hx, z: head.hz, color: COOLWHITE, radius: 16, intensity: 1.15, height: 6.0 })
+        props.push({ kind: 'lampProp', x: lx, z: lz, rot: head.rot, variant: 1 })
+      }
+      // cones guarding the corners of the strip
+      if (t.piece === 'corner') {
+        props.push({ kind: 'cone', x: t.x + (hash2(t.gx, t.gz, 7) - 0.5) * 4, z: t.z + (hash2(t.gx, t.gz, 8) - 0.5) * 4, rot: hash2(t.gx, t.gz, 9) * Math.PI, variant: t.gx % 2 })
       }
     }
 
@@ -486,6 +574,80 @@ export function parseMap(): ParsedMap {
     colliders.push(box(c.x + TILE * 0.9, c.z - TILE * 0.9, 2.5, 2.5))
   }
 
+  // --- spur set pieces (each spur tip is an 'end' tile of its zone) ---
+  const spurTip = (zone: Zone): RoadTile | undefined => tiles.find((t) => t.zone === zone && t.piece === 'end')
+
+  // the all-night gas station: west of the pull-in spur, canopy facing the pumps
+  const gasTip = spurTip('g')
+  if (gasTip) {
+    const gx2 = gasTip.x - TILE * 1.45
+    const gz2 = gasTip.z + TILE * 0.4
+    props.push({ kind: 'gas', x: gx2, z: gz2, rot: Math.PI / 2, variant: 0 })
+    colliders.push(box(gx2 - 2.0, gz2, 4.2, 5.2)) // the shop building; the forecourt stays drivable
+    // forecourt spot lamp — the strip's beacon, visible from the fields
+    lamps.push({ x: gasTip.x - 3, z: gasTip.z + 2, color: COOLWHITE, radius: 20, intensity: 1.35, height: 6.5 })
+    for (let i = 0; i < 3; i++) {
+      props.push({ kind: 'cone', x: gasTip.x + 6 + hash2(i, 1) * 3, z: gasTip.z + i * 4 - 3, rot: hash2(i, 2) * Math.PI, variant: i % 2 })
+    }
+    // a car parked at the pumps, nose out
+    props.push({ kind: 'parked', x: gx2 + 6.5, z: gz2 - 2, rot: Math.PI / 2 + 0.15, variant: 2 })
+    colliders.push(box(gx2 + 6.5, gz2 - 2, 2.3, 1.0))
+  }
+
+  // village green at the cul-de-sac: gazebo, benches — somewhere to be pulled over WITH dignity
+  const greenTip = spurTip('v')
+  if (greenTip) {
+    const gzX = greenTip.x
+    const gzZ = greenTip.z + TILE * 0.8
+    props.push({ kind: 'gazebo', x: gzX, z: gzZ, rot: 0, variant: 0 })
+    colliders.push(box(gzX, gzZ, 2.2, 2.2, true))
+    for (const side of [-1, 1]) {
+      props.push({ kind: 'bench', x: gzX + side * 5.5, z: gzZ - 1.5, rot: side > 0 ? -Math.PI / 2 : Math.PI / 2, variant: side > 0 ? 0 : 1 })
+    }
+    lamps.push({ x: gzX + 3.5, z: gzZ - 4, color: SODIUM, radius: 12, intensity: 1.0, height: 5.2 })
+    props.push({ kind: 'lampProp', x: gzX + 3.5, z: gzZ - 4, rot: Math.PI, variant: 0 })
+  }
+
+  // the wreck at the end of the field track: two abandoned cars, cones nobody moved
+  const wreckTip = spurTip('p')
+  if (wreckTip) {
+    const wx = wreckTip.x
+    const wz = wreckTip.z + TILE * 0.6
+    props.push({ kind: 'parked', x: wx - 2, z: wz, rot: 0.6, variant: 1 })
+    colliders.push(box(wx - 2, wz, 1.8, 1.8))
+    props.push({ kind: 'parked', x: wx + 3, z: wz + 2, rot: -1.9, variant: 3 })
+    colliders.push(box(wx + 3, wz + 2, 1.8, 1.8))
+    for (let i = 0; i < 4; i++) {
+      props.push({ kind: 'cone', x: wx - 5 + i * 3, z: wz - 5 + hash2(i, 3) * 3, rot: hash2(i, 4) * Math.PI, variant: i % 2 })
+    }
+    props.push({ kind: 'rock', x: wx + 7, z: wz + 5, rot: 0.8, variant: 0 })
+  }
+
+  // --- road signs: stop signs at T junctions, speed/zone signs where zones change ---
+  {
+    const N = order.length
+    const signAt = (t: RoadTile, heading: number, variant: number): void => {
+      // roadside, right-hand side of travel, facing oncoming traffic
+      const sx = t.x + Math.cos(heading) * (CURB_HALF + 0.7)
+      const sz = t.z - Math.sin(heading) * (CURB_HALF + 0.7)
+      props.push({ kind: 'sign', x: sx, z: sz, rot: heading + Math.PI, variant })
+    }
+    for (let i = 0; i < N; i++) {
+      const t = order[i]
+      const nxt = order[(i + 1) % N]
+      const heading = Math.atan2(nxt.x - t.x, nxt.z - t.z)
+      if (t.piece === 't' || t.piece === 'cross') {
+        signAt(t, heading, 0) // STOP at every junction — nobody stops, that's the point
+        continue
+      }
+      if (nxt.zone !== t.zone) {
+        // entering the next zone: village 25 · gas strip crossing · fields 55 · elsewhere 35
+        const variant = nxt.zone === 'v' ? 1 : nxt.zone === 'g' ? 3 : nxt.zone === 'p' ? 2 : 4
+        signAt(nxt, Math.atan2(order[(i + 2) % N].x - nxt.x, order[(i + 2) % N].z - nxt.z), variant)
+      }
+    }
+  }
+
   // --- vegetation scatter: density-field driven so some areas are thick woods and
   // others open meadow; bushes-only near the dirt road (offroad play space);
   // NOTHING is allowed to overhang the road (5-point clearance around each trunk)
@@ -497,7 +659,23 @@ export function parseMap(): ParsedMap {
     }
     return false
   }
-  for (let i = 0; i < 7400; i++) {
+  // Big trees carry colliders; keep them out of a band around EVERY road so the
+  // cop's (and traffic's) straight-line cross-country cuts stay survivable. Small
+  // trees and bushes are collider-free and keep the band from looking mown.
+  // 48 m: a pursuit overshoot at speed carries the cop ~2 tiles off the road
+  // before he gathers it up — the whole excursion has to be tree-trunk-free.
+  const nearAnyRoad = (x: number, z: number): boolean => {
+    const cgx = Math.round(x / TILE)
+    const cgz = Math.round(z / TILE)
+    for (let dz = -3; dz <= 3; dz++) {
+      for (let dx = -3; dx <= 3; dx++) {
+        const t = tileMap.get(cgx + dx + ',' + (cgz + dz))
+        if (t && (t.x - x) ** 2 + (t.z - z) ** 2 < 48 * 48) return true
+      }
+    }
+    return false
+  }
+  for (let i = 0; i < 16000; i++) { // count scales with map area — density held at the v1 level
     const x = hash2(i, 91) * W * TILE
     const z = hash2(i, 92) * H * TILE
     // regional density: 40 m cells, squared for contrast (dense woods vs open meadow)
@@ -505,8 +683,9 @@ export function parseMap(): ParsedMap {
     if (hash2(i, 97) > cd * cd * 1.9) continue
     if (!clearOfRoad(x, z)) continue
     const bushOnly = nearDirt(x, z)
+    const noBigTrees = nearAnyRoad(x, z)
     const r = hash2(i, 93)
-    const kind = bushOnly ? 'bush' : r < 0.2 ? 'tree_big' : r < 0.38 ? 'tree_small' : 'bush'
+    const kind = bushOnly ? 'bush' : r < 0.2 ? (noBigTrees ? 'tree_small' : 'tree_big') : r < 0.38 ? 'tree_small' : 'bush'
     props.push({ kind, x, z, rot: hash2(i, 94) * Math.PI * 2, variant: Math.floor(hash2(i, 95) * 12) })
     if (kind === 'tree_big') colliders.push(box(x, z, 0.7, 0.7))
   }
@@ -517,7 +696,7 @@ export function parseMap(): ParsedMap {
     const minX = -TILE, maxX = W * TILE
     const minZ = -TILE, maxZ = H * TILE
     const perim = 2 * (maxX - minX + maxZ - minZ)
-    for (let i = 0; i < 1500; i++) {
+    for (let i = 0; i < 2200; i++) {
       const along = hash2(i, 201) * perim
       const out = 3 + hash2(i, 202) * 52 // meters beyond the edge
       let x: number, z: number
@@ -536,7 +715,7 @@ export function parseMap(): ParsedMap {
   }
 
   // scattered rocks in the fields
-  for (let i = 0; i < 160; i++) {
+  for (let i = 0; i < 320; i++) {
     const x = hash2(i, 77) * W * TILE
     const z = hash2(i, 78) * H * TILE
     if (!clearOfRoad(x, z)) continue
@@ -554,7 +733,7 @@ export function parseMap(): ParsedMap {
     const gz = Math.round(z / TILE)
     const t = tileMap.get(gx + ',' + gz)
     if (!t) return 0.6
-    return t.zone === 'p' ? 1.0 : t.zone === 'w' ? 0.8 : t.zone === 'e' ? 0.4 : 0.25
+    return t.zone === 'p' ? 1.0 : t.zone === 'w' ? 0.8 : t.zone === 'e' ? 0.4 : t.zone === 'g' ? 0.3 : 0.25
   }
 
   return {

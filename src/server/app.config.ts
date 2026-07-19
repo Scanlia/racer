@@ -6,6 +6,7 @@ import config from '@colyseus/tools'
 import express from 'express'
 import path from 'node:path'
 import { DriftRoom } from './DriftRoom'
+import { leaderboard } from './leaderboard'
 
 export default config({
   initializeGameServer: (gameServer) => {
@@ -13,6 +14,12 @@ export default config({
   },
 
   initializeExpress: (app) => {
+    // tonight's wanted list — the join screen reads this (CORS open: in dev the
+    // client is served by vite on another port)
+    app.get('/leaderboard', (_req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*')
+      res.json({ top: leaderboard.top(10) })
+    })
     // cwd is the app root (game/) both under `npm run server` and under PM2,
     // whose cwd defaults to the ecosystem.config.js directory
     const dist = path.resolve(process.cwd(), 'dist')

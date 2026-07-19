@@ -1,0 +1,16 @@
+# One free Render web service hosts the whole game: the Colyseus server owns the
+# websockets and serves the built client from dist/ (same origin, so the client's
+# wss://<host> connection works unchanged). Free-tier notes: spins down after
+# ~15 min idle (first visitor waits ~50 s) and the disk is ephemeral, so
+# data/leaderboard.json resets on each deploy/restart.
+services:
+  - type: web
+    name: night-drift
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run assets && npm run build:client && npm run build
+    startCommand: npm run start
+    healthCheckPath: /leaderboard
+    envVars:
+      - key: ANTHROPIC_API_KEY # optional — without it Bram runs scripted
+        sync: false

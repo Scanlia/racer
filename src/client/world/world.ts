@@ -496,6 +496,89 @@ export class World {
       }
     })())
 
+    // traffic cones (roads pack GLBs, embedded textures)
+    jobs.push((async () => {
+      const cones = P.filter((p) => p.kind === 'cone')
+      if (!cones.length) return
+      try {
+        const c1 = await loadGLB('/assets/roads/Traffic_Cone_1.glb')
+        const c2 = await loadGLB('/assets/roads/Traffic_Cone_2.glb')
+        this.placeInstanced(c1, cones.filter((c) => c.variant === 0), { targetHeight: 0.55 })
+        this.placeInstanced(c2, cones.filter((c) => c.variant !== 0), { targetHeight: 0.55 })
+      } catch (e) {
+        console.warn('cone load failed', e)
+      }
+    })())
+
+    // road signs: variant → model (0 stop, 1 SL25, 2 SL55, 3 crossing, 4 wrong way)
+    jobs.push((async () => {
+      const signs = P.filter((p) => p.kind === 'sign')
+      if (!signs.length) return
+      const files = ['Sign_Stop.glb', 'Sign_SL25.glb', 'Sign_SL55.glb', 'Sign_Crossing.glb', 'Sign_WrongWay.glb']
+      for (let v = 0; v < files.length; v++) {
+        const subset = signs.filter((s) => s.variant === v)
+        if (!subset.length) continue
+        try {
+          const model = await loadGLB('/assets/roads/Signs/' + files[v])
+          this.placeClones(model, subset, { targetHeight: 2.6, tintAmbient: 0.9 })
+        } catch (e) {
+          console.warn('sign load failed', files[v], e)
+        }
+      }
+    })())
+
+    // field fences: one FBX segment per tile edge, stretched to tile length
+    jobs.push((async () => {
+      const fences = P.filter((p) => p.kind === 'fence')
+      if (!fences.length) return
+      try {
+        const tex = await loadTexture('/assets/fences/tex/low_wooden_wall.jpg')
+        const models: LoadedModel[] = []
+        for (const f of ['fence1_01.fbx', 'fence2_01.fbx']) {
+          models.push(await loadFBX('/assets/fences/' + f, tex))
+        }
+        for (let i = 0; i < models.length; i++) {
+          this.placeClones(models[i], fences.filter((f) => f.variant % models.length === i), { targetSize: { x: 0.4, y: 1.1, z: TILE * 0.92 } })
+        }
+      } catch (e) {
+        console.warn('fence load failed', e)
+      }
+    })())
+
+    // the all-night gas station (FBX resolves its textures from the same folder)
+    jobs.push((async () => {
+      const gas = P.filter((p) => p.kind === 'gas')
+      if (!gas.length) return
+      try {
+        const model = await loadFBX('/assets/gasstation/Gas_station.fbx')
+        this.placeClones(model, gas, { targetWidth: 24, tintAmbient: 1.4 })
+      } catch (e) {
+        console.warn('gas station load failed', e)
+      }
+    })())
+
+    // village green: gazebo + stone benches (hedge-maze pack textures)
+    jobs.push((async () => {
+      const gazebos = P.filter((p) => p.kind === 'gazebo')
+      const benches = P.filter((p) => p.kind === 'bench')
+      if (!gazebos.length && !benches.length) return
+      try {
+        const tex = await loadTexture('/assets/landmarks/tex/textures.png')
+        if (gazebos.length) {
+          const model = await loadFBX('/assets/landmarks/gazebo.fbx', tex)
+          this.placeClones(model, gazebos, { targetHeight: 4.6, tintAmbient: 0.9 })
+        }
+        if (benches.length) {
+          const b1 = await loadFBX('/assets/landmarks/stone/bench01.fbx', tex)
+          const b2 = await loadFBX('/assets/landmarks/stone/bench02.fbx', tex)
+          this.placeClones(b1, benches.filter((b) => b.variant === 0), { targetHeight: 0.9 })
+          this.placeClones(b2, benches.filter((b) => b.variant !== 0), { targetHeight: 0.9 })
+        }
+      } catch (e) {
+        console.warn('village green load failed', e)
+      }
+    })())
+
     await Promise.all(jobs)
   }
 }

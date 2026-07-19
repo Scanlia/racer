@@ -2,6 +2,9 @@
   "name": "night-drift",
   "private": true,
   "version": "0.1.0",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "assets": "node scripts/copy-assets.mjs",
     "dev": "vite",

@@ -4,11 +4,8 @@ import { cpSync, mkdirSync, existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// The packs used to live beside the repo (<root>/game + <root>/3d models); they are
-// now vendored in assets-src/, so this resolves inside the repo and `npm run assets`
-// works from a fresh clone.
 const repo = join(dirname(fileURLToPath(import.meta.url)), '..')
-const root = join(repo, 'assets-src')
+const root = join(repo, 'assets-src') // in-repo archive of the source packs
 const out = join(repo, 'public', 'assets')
 
 const copies = [
@@ -53,6 +50,7 @@ const copies = [
   // landmarks
   ['3d models/misc_models/tower.fbx', 'landmarks/tower.fbx'],
   ['3d models/misc_models/gazebo.fbx', 'landmarks/gazebo.fbx'],
+  ['3d models/misc_models/stone', 'landmarks/stone'], // benches for the village green
   ['3d models/hedge_maze_pack/textures', 'landmarks/tex'],
   // music
   ['background sounds/background-loop.mp3', 'audio/background-loop.mp3'],

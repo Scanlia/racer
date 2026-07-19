@@ -1,9 +1,11 @@
 .git
 node_modules
 build
-assets-src
-# already baked into dist/ by the client build
-public
+# both regenerated inside the image by `npm run assets && npm run build:client`
+dist
+public/assets
+# leaderboard state lives in a volume, never in the image
+data
 .env
 .env.*
 .colyseus-cloud.json

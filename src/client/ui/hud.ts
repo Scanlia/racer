@@ -18,6 +18,7 @@ export class HUD {
   private chainEl: HTMLElement
   private multEl: HTMLElement
   private toastEl: HTMLElement
+  private popsEl: HTMLElement
   private playersEl: HTMLElement
   private gauge: HTMLCanvasElement
   private g: CanvasRenderingContext2D
@@ -36,6 +37,7 @@ export class HUD {
         <div id="hud-players"></div>
       </div>
       <div id="hud-toast"></div>
+      <div id="hud-pops"></div>
       <canvas id="hud-gauge" width="200" height="200"></canvas>
       <div id="hud-help">WASD/arrows drive · SPACE handbrake · L lights · C camera · M radio · R reset · H horn · \` tuning</div>
     `
@@ -44,6 +46,7 @@ export class HUD {
     this.chainEl = document.getElementById('hud-chain')!
     this.multEl = document.getElementById('hud-mult')!
     this.toastEl = document.getElementById('hud-toast')!
+    this.popsEl = document.getElementById('hud-pops')!
     this.playersEl = document.getElementById('hud-players')!
     this.gauge = document.getElementById('hud-gauge') as HTMLCanvasElement
     this.g = this.gauge.getContext('2d')!
@@ -55,6 +58,16 @@ export class HUD {
     this.toastEl.textContent = msg
     this.toastEl.className = 'show ' + cls
     this.toastTimer = 1.6
+  }
+
+  // floating one-shot (near misses): stacks, drifts up, self-destructs
+  popup(msg: string, cls = ''): void {
+    const el = document.createElement('div')
+    el.className = 'hud-pop ' + cls
+    el.textContent = msg
+    this.popsEl.appendChild(el)
+    while (this.popsEl.children.length > 4) this.popsEl.firstChild?.remove()
+    setTimeout(() => el.remove(), 1300)
   }
 
   setPlayers(rows: PlayerRow[]): void {

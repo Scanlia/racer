@@ -79,11 +79,15 @@ export class CopChat {
     this.log.scrollTop = this.log.scrollHeight
   }
 
-  verdict(v: 'release' | 'arrest', score: number): void {
+  verdict(v: 'release' | 'fine' | 'arrest', seized: number, charm = false): void {
     this.input.disabled = true
     this.input.blur()
     this.banner.className = 'show ' + v
-    this.banner.textContent = v === 'release' ? 'LET OFF WITH A WARNING' : `BOOKED — ${score} POINTS SEIZED`
+    this.banner.textContent =
+      v === 'arrest' ? `BOOKED — ${seized} POINTS SEIZED`
+      : v === 'fine' ? `ON-THE-SPOT FINE — ${seized} POINTS`
+      : charm ? 'HE ALMOST SMILES — OFF YOU GO'
+      : 'LET OFF WITH A WARNING'
     setTimeout(() => {
       this.el.style.display = 'none'
       this.banner.className = ''
