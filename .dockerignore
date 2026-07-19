@@ -1,0 +1,10 @@
+.git
+node_modules
+build
+assets-src
+# already baked into dist/ by the client build
+public
+.env
+.env.*
+.colyseus-cloud.json
+*.md
