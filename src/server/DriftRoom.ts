@@ -192,16 +192,24 @@ export class DriftRoom extends Room<DriftState> {
   private tick(): void {
     if (this.copBrain.tick % 60 === 0) this.sweepStale()
     for (const [, sim] of this.sims) {
-      const input = sim.queue.length ? sim.queue.shift()! : sim.lastInput
-      sim.lastInput = input
-      // catch up if the client got ahead (packets are batched)
+      let input = sim.queue.length ? sim.queue.shift()! : sim.lastInput
+      // Catch up if the client got ahead (packets are batched). Every backlog frame
+      // has to be STEPPED. This used to re-step the same `input` each pass and shift
+      // the queued frames straight into lastInput without simulating them, then
+      // publish a discarded frame's seq as lastSeq. The client prunes its replay
+      // buffer against that seq, so it dropped inputs the server never applied and
+      // its prediction diverged with no way to recover. Measured 12.16m apart after
+      // 500 bursted inputs, which is far past reconcile()'s 4m snap threshold, so the
+      // car teleports. Only bites when packets arrive in bursts, which is why it
+      // looked like the car got glitchier the longer you drove.
       let extra = 0
       while (sim.queue.length > 6 && extra < 3) {
         stepCar(sim.car, input, TUNING, PHYS_DT, this.map.surfaceAt, this.map.colliders, this.map.heightAt)
         stepScore(sim.score, sim.car, PHYS_DT)
-        sim.lastInput = sim.queue.shift()!
+        input = sim.queue.shift()!
         extra++
       }
+      sim.lastInput = input
       stepCar(sim.car, input, TUNING, PHYS_DT, this.map.surfaceAt, this.map.colliders, this.map.heightAt)
       stepScore(sim.score, sim.car, PHYS_DT)
     }

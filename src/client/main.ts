@@ -241,6 +241,7 @@ async function boot(): Promise<void> {
     if (e.code === 'KeyM') audio.toggleRadio() // car radio on/off (static burst between)
     if (e.code === 'KeyT') camMode = camMode === 3 ? 0 : 3 // debug top-down (was M)
     if (e.code === 'KeyP') pilot = !pilot // loop-following autopilot (demo/debug)
+    if (e.code === 'F3') { perfOn = !perfOn; perfEl.style.display = perfOn ? 'block' : 'none' }
     if (e.code === 'KeyH') { audio.horn(); net.horn() }
     if (e.code === 'KeyR') resetCar()
   })
@@ -255,6 +256,20 @@ async function boot(): Promise<void> {
   const spawnZ = spawnParam?.[1] ?? map.spawn.z
   const car = makeCarState(spawnX, spawnZ, map.spawn.yaw)
   net.getSpawn = () => ({ x: car.x, z: car.z })
+  // ---------- perf readout (F3) ----------
+  // Frame timing sits alongside the draw-call counters on purpose: together they say
+  // whether a bad frame is GPU bound (draws/tris high) or CPU bound (ms high with
+  // draws flat). Worst-frame is tracked separately because a stutter every few
+  // seconds is invisible in an average but is exactly what you feel while driving.
+  let perfFps = 0, perfMs = 0, perfWorst = 0
+  let perfFrames = 0, perfAccum = 0, perfPeak = 0
+  let perfOn = false
+  const perfEl = document.createElement('div')
+  perfEl.style.cssText =
+    'position:fixed;top:6px;left:6px;z-index:60;display:none;font-family:var(--pix),monospace;' +
+    'font-size:11px;line-height:1.5;color:#9fe08f;text-shadow:1px 1px 0 #000;white-space:pre;pointer-events:none'
+  document.body.appendChild(perfEl)
+
   // debug state readable from the extension's isolated world (DOM crosses, globals don't)
   setInterval(() => {
     document.body.dataset.dbg = JSON.stringify({
@@ -263,6 +278,7 @@ async function boot(): Promise<void> {
       x: +car.x.toFixed(1), z: +car.z.toFixed(1), yaw: +car.yaw.toFixed(2),
       slip: +car.slipAngle.toFixed(3),
       draws: pipeline.renderer.info.render.calls, tris: pipeline.renderer.info.render.triangles,
+      fps: perfFps, ms: +perfMs.toFixed(2), worstMs: +perfWorst.toFixed(2),
       cop: (() => {
         const c = [...net.remotes.values()].find((r) => r.bot === 1)
         return c ? { x: +c.x.toFixed(1), z: +c.z.toFixed(1), mode: c.copMode, pinT: +c.pinT.toFixed(2), target: c.copTarget === net.myId ? 'me' : c.copTarget } : null
@@ -344,6 +360,17 @@ async function boot(): Promise<void> {
 
   // ---------- fixed-step loop ----------
   const tint = new THREE.Color()
+  // Scratch objects reused every frame. These were allocated inside the loop, which
+  // at 60 Hz is a few hundred short-lived THREE objects a second feeding the GC for
+  // no reason. Reusing them costs nothing and keeps the young generation quiet.
+  const tint2 = new THREE.Color()
+  const skidL = new THREE.Vector3()
+  const skidR = new THREE.Vector3()
+  const rightAxis = new THREE.Vector3()
+  const upAxis = new THREE.Vector3(0, 1, 0)
+  const qCar = new THREE.Quaternion()
+  const qYaw = new THREE.Quaternion()
+  const tagPos = new THREE.Vector3()
   let acc = 0
   let last = performance.now()
   let shapedInput: InputFrame = { seq: 0, steer: 0, throttle: 0, brake: 0, handbrake: false, headlights: true }
@@ -353,6 +380,22 @@ async function boot(): Promise<void> {
     const now = performance.now()
     let dt = (now - last) / 1000
     last = now
+    perfFrames++
+    perfAccum += dt
+    if (dt > perfPeak) perfPeak = dt
+    if (perfAccum >= 0.5) {
+      perfFps = Math.round(perfFrames / perfAccum)
+      perfMs = (perfAccum / perfFrames) * 1000
+      perfWorst = perfPeak * 1000
+      if (perfOn) {
+        const info = pipeline.renderer.info
+        perfEl.textContent =
+          `${perfFps} fps  avg ${perfMs.toFixed(1)}ms  worst ${perfWorst.toFixed(1)}ms\n` +
+          `draws ${info.render.calls}  tris ${(info.render.triangles / 1000).toFixed(0)}k\n` +
+          `geom ${info.memory.geometries}  tex ${info.memory.textures}`
+      }
+      perfFrames = 0; perfAccum = 0; perfPeak = 0
+    }
     if (dt > 0.25) dt = 0.25
     acc += dt
 
@@ -453,8 +496,8 @@ async function boot(): Promise<void> {
         const b = TUNING.cgToRear * 0.9
         const hy = map.heightAt(car.x, car.z)
         skids.addSegment(
-          new THREE.Vector3(car.x - fwdX * b - rightX * 0.8, hy, car.z - fwdZ * b - rightZ * 0.8),
-          new THREE.Vector3(car.x - fwdX * b + rightX * 0.8, hy, car.z - fwdZ * b + rightZ * 0.8),
+          skidL.set(car.x - fwdX * b - rightX * 0.8, hy, car.z - fwdZ * b - rightZ * 0.8),
+          skidR.set(car.x - fwdX * b + rightX * 0.8, hy, car.z - fwdZ * b + rightZ * 0.8),
           Math.max(Math.abs(car.slipAngle), 0.25 + car.wheelspin * 0.4),
         )
       } else {
@@ -493,9 +536,9 @@ async function boot(): Promise<void> {
     const hF = map.heightAt(ix + Math.sin(iyaw) * 1.6, iz + Math.cos(iyaw) * 1.6)
     const hR = map.heightAt(ix - Math.sin(iyaw) * 1.6, iz - Math.cos(iyaw) * 1.6)
     const pitch = Math.atan2(hF - hR, 3.2)
-    const rightAxis = new THREE.Vector3(Math.cos(iyaw), 0, -Math.sin(iyaw))
-    const qCar = new THREE.Quaternion().setFromAxisAngle(rightAxis, -pitch)
-    qCar.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), iyaw))
+    rightAxis.set(Math.cos(iyaw), 0, -Math.sin(iyaw))
+    qCar.setFromAxisAngle(rightAxis, -pitch)
+    qCar.multiply(qYaw.setFromAxisAngle(upAxis, iyaw))
     carModel.group.position.set(ix, carH, iz)
     carModel.group.quaternion.copy(qCar)
     rig.group.position.set(ix, carH, iz)
@@ -523,7 +566,6 @@ async function boot(): Promise<void> {
       const nowS = performance.now() / 1000
       net.sample(nowS)
       net.interpolate(nowS)
-      const tint2 = new THREE.Color()
       for (const r of net.remotes.values()) {
         const v = remoteVis.get(r.id)
         if (!v) {
@@ -554,7 +596,7 @@ async function boot(): Promise<void> {
           }
         }
         // name tag above the car
-        const sp = new THREE.Vector3(r.x, map.heightAt(r.x, r.z) + 2.2, r.z).project(camera)
+        const sp = tagPos.set(r.x, map.heightAt(r.x, r.z) + 2.2, r.z).project(camera)
         if (sp.z < 1) {
           v.tag.style.display = 'block'
           v.tag.style.left = ((sp.x * 0.5 + 0.5) * window.innerWidth - 20) + 'px'
