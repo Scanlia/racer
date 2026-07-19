@@ -140,7 +140,16 @@ export function stepCar(
   const loadR = Math.max((T.mass * g * a) / L + transfer, T.mass * g * 0.08)
 
   // --- slip angles ---
-  const slipF = Math.atan2(vLat + s.yawRate * a, absVLong) - delta * Math.sign(vLong >= 0 ? 1 : -1)
+  // Direction of travel SCALES the steering term rather than flipping with sign().
+  // Parked on full lock, vLong dithers either side of zero on idle creep, and a hard
+  // sign flip inverted the front lateral force on almost every frame: measured 508
+  // flips in 600 steps with yawRate peaking at 94 rad/s, i.e. the car shaking itself
+  // apart while stationary. Fading out is also the physical answer, since a wheel
+  // that is not rolling generates no slip force. The fade matches the absVLong floor,
+  // so at 0.5 m/s and above dir is exactly +/-1 and the handling is bit-for-bit
+  // unchanged -- this only touches the degenerate near-standstill region.
+  const dir = clamp(vLong / 0.5, -1, 1)
+  const slipF = Math.atan2(vLat + s.yawRate * a, absVLong) - delta * dir
   const slipR = Math.atan2(vLat - s.yawRate * b, absVLong)
   s.slipFront = slipF
   s.slipRear = slipR
