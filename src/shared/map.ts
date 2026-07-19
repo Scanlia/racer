@@ -412,6 +412,31 @@ export function parseMap(): ParsedMap {
     return { hx: lx + Math.sin(rot) * LAMP_ARM, hz: lz + Math.cos(rot) * LAMP_ARM, rot }
   }
 
+  // `along` below is only meaningful on a straight (its own comment says so), but
+  // every zone used it to offset lamps. On a corner (dirs=es) or a T (dirs=esw) the
+  // offset therefore ran ALONG one of the arms and stood the post in the middle of
+  // the carriageway. Rather than special-case each piece, check the intended spot
+  // against the surface sampler: keep it when it is already clear, otherwise try the
+  // other verges. Returns null when the tile has no clear verge, and the lamp is
+  // skipped rather than dropped in the road. Only the POST is placed this way; the
+  // head still hangs out over the asphalt on its arm, which is the point of a lamp.
+  // NB: distinct from clearOfRoad above, which demands 3 m of clearance and is right
+  // for trees and houses. A lamppost belongs ON the curb, so this only rejects the
+  // driveable surface itself.
+  const offCarriageway = (x: number, z: number): boolean => {
+    const s = surfaceAt(x, z)
+    return s !== 'asphalt' && s !== 'dirt'
+  }
+  const vergeSpot = (t: RoadTile, px: number, pz: number, off: number): { x: number; z: number } | null => {
+    const cands = [
+      { x: px, z: pz }, // whatever the zone intended, so correct lamps never move
+      { x: t.x, z: t.z + off }, { x: t.x, z: t.z - off },
+      { x: t.x + off, z: t.z }, { x: t.x - off, z: t.z },
+    ]
+    for (const c of cands) if (offCarriageway(c.x, c.z)) return c
+    return null
+  }
+
   let lampAlt = 0
   for (const t of tiles) {
     const along = t.dirs.n || t.dirs.s ? 'ns' : 'ew' // dominant axis for straights
@@ -423,9 +448,12 @@ export function parseMap(): ParsedMap {
         const side = lampAlt++ % 2 === 0 ? 1 : -1
         const lx = along === 'ns' ? t.x + side * (CURB_HALF - 0.8) : t.x
         const lz = along === 'ns' ? t.z : t.z + side * (CURB_HALF - 0.8)
-        const head = lampHead(lx, lz, t.x, t.z)
-        lamps.push({ x: head.hx, z: head.hz, color: SODIUM, radius: 13, intensity: 1.0, height: 5.2 })
-        props.push({ kind: 'lampProp', x: lx, z: lz, rot: head.rot, variant: 0 })
+        const spot = vergeSpot(t, lx, lz, CURB_HALF - 0.8)
+        if (spot) {
+          const head = lampHead(spot.x, spot.z, t.x, t.z)
+          lamps.push({ x: head.hx, z: head.hz, color: SODIUM, radius: 13, intensity: 1.0, height: 5.2 })
+          props.push({ kind: 'lampProp', x: spot.x, z: spot.z, rot: head.rot, variant: 0 })
+        }
       }
       // houses on open sides of straights
       if (t.piece === 'straight') {
@@ -493,9 +521,12 @@ export function parseMap(): ParsedMap {
       if ((t.gx + t.gz) % 3 === 0) {
         const lx = t.x + (along === 'ns' ? 8.6 : 0)
         const lz = t.z + (along === 'ns' ? 0 : 8.6)
-        const head = lampHead(lx, lz, t.x, t.z)
-        lamps.push({ x: head.hx, z: head.hz, color: COOLWHITE, radius: 15, intensity: 0.9, height: 6.0 })
-        props.push({ kind: 'lampProp', x: lx, z: lz, rot: head.rot, variant: 1 })
+        const spot = vergeSpot(t, lx, lz, 8.6)
+        if (spot) {
+          const head = lampHead(spot.x, spot.z, t.x, t.z)
+          lamps.push({ x: head.hx, z: head.hz, color: COOLWHITE, radius: 15, intensity: 0.9, height: 6.0 })
+          props.push({ kind: 'lampProp', x: spot.x, z: spot.z, rot: head.rot, variant: 1 })
+        }
       }
       // wooden field fences along straights (visual dressing, no collider —
       // running wide into a field should cost speed, not the car)
@@ -515,9 +546,12 @@ export function parseMap(): ParsedMap {
         const side = lampAlt++ % 2 === 0 ? 1 : -1
         const lx = along === 'ns' ? t.x + side * (CURB_HALF - 0.6) : t.x
         const lz = along === 'ns' ? t.z : t.z + side * (CURB_HALF - 0.6)
-        const head = lampHead(lx, lz, t.x, t.z)
-        lamps.push({ x: head.hx, z: head.hz, color: COOLWHITE, radius: 16, intensity: 1.15, height: 6.0 })
-        props.push({ kind: 'lampProp', x: lx, z: lz, rot: head.rot, variant: 1 })
+        const spot = vergeSpot(t, lx, lz, CURB_HALF - 0.6)
+        if (spot) {
+          const head = lampHead(spot.x, spot.z, t.x, t.z)
+          lamps.push({ x: head.hx, z: head.hz, color: COOLWHITE, radius: 16, intensity: 1.15, height: 6.0 })
+          props.push({ kind: 'lampProp', x: spot.x, z: spot.z, rot: head.rot, variant: 1 })
+        }
       }
       // cones guarding the corners of the strip
       if (t.piece === 'corner') {
@@ -560,9 +594,12 @@ export function parseMap(): ParsedMap {
     const mid = forestTiles[Math.floor(forestTiles.length / 2)]
     {
       const lx = mid.x + CURB_HALF - 0.8
-      const head = lampHead(lx, mid.z, mid.x, mid.z)
-      lamps.push({ x: head.hx, z: head.hz, color: SODIUM, radius: 12, intensity: 1.1, height: 5.2 })
-      props.push({ kind: 'lampProp', x: lx, z: mid.z, rot: head.rot, variant: 0 })
+      const spot = vergeSpot(mid, lx, mid.z, CURB_HALF - 0.8)
+      if (spot) {
+        const head = lampHead(spot.x, spot.z, mid.x, mid.z)
+        lamps.push({ x: head.hx, z: head.hz, color: SODIUM, radius: 12, intensity: 1.1, height: 5.2 })
+        props.push({ kind: 'lampProp', x: spot.x, z: spot.z, rot: head.rot, variant: 0 })
+      }
     }
   }
 
