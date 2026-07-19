@@ -63,7 +63,9 @@ console.log(`pursuit 25s: dist ${Math.hypot(cop.x - p.x, cop.z - p.z).toFixed(1)
     priorOffenses: 1, sessionScore: 4200, playerCarColor: 'red', playerName: 'reece',
     locationNow: 'the village lane, past the houses', escapeAttempted: true,
   })
-  console.log(`\n--- interrogation (${process.env.ANTHROPIC_API_KEY ? 'live API' : 'scripted fallback — no ANTHROPIC_API_KEY'}) ---`)
+  const provider = (process.env.LLM_PROVIDER || 'anthropic').toLowerCase()
+  const keyed = provider === 'gemini' ? !!process.env.GEMINI_API_KEY : !!process.env.ANTHROPIC_API_KEY
+  console.log(`\n--- interrogation (${keyed ? `live API via ${provider}` : `scripted fallback — no key for ${provider}`}) ---`)
   console.log(`opening disposition ${it.disposition}/100`)
   const open = await it.open()
   console.log(`bram: ${open.reply}  «${open.mood}»`)
