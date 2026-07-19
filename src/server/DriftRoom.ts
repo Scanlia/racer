@@ -91,7 +91,11 @@ export class DriftRoom extends Room<DriftState> {
 
   onCreate(): void {
     this.setState(new DriftState())
-    this.setPatchRate(50) // 20 Hz
+    // 30 Hz. The client interpolates INTERP_DELAY behind, so at 20 Hz that buffer
+    // was only ~2.4 patches deep and ordinary jitter emptied it, leaving remotes to
+    // freeze and then snap. At 30 Hz it is ~3.6 deep for a few hundred bytes/s more
+    // per client, which matters most for the police everyone is watching.
+    this.setPatchRate(33) // 30 Hz
     this.map = parseMap()
     // One network for the whole room. Every AI driver routes over the same graph, so
     // it is built once and handed to each brain rather than rebuilt per car.
@@ -168,6 +172,8 @@ export class DriftRoom extends Room<DriftState> {
 
     this.onMessage('cop:chat', async (client, text: string) => {
       if (!this.interrogation || client.sessionId !== this.frozenId) return
+      const typing = this.sims.get(client.sessionId)
+      if (typing) typing.lastSeen = Date.now() // answering Bram is proof of life
       const active = this.interrogation
       const turn = await active.playerSays(String(text ?? ''))
       // the stop may have ended while the model was thinking (clock, disconnect)
@@ -222,6 +228,13 @@ export class DriftRoom extends Room<DriftState> {
   private sweepStale(): void {
     const now = Date.now()
     for (const [id, sim] of this.sims) {
+      // The interrogated player is SUPPOSED to be silent: the client stops sending
+      // input the moment the chat opens (main.ts gates on `!frozen`), so input
+      // silence here means "talking to Bram", not "dead socket". Sweeping them
+      // booked every stop STALE_MS into a CHAT_TIME_LIMIT_S conversation, whatever
+      // they said. The chat clock still bounds it (timeLeft() <= 0 forces a verdict
+      // in tick()), and onLeave still books anyone who genuinely disconnects.
+      if (id === this.frozenId && this.interrogation) continue
       if (now - sim.lastSeen < STALE_MS) continue
       console.log(`[room] dropping stale client ${id} (${((now - sim.lastSeen) / 1000).toFixed(0)}s silent)`)
       const client = this.clients.find((cl) => cl.sessionId === id)
@@ -249,16 +262,22 @@ export class DriftRoom extends Room<DriftState> {
   private tick(): void {
     if (this.cops[0].brain.tick % 60 === 0) this.sweepStale()
     for (const [, sim] of this.sims) {
-      const input = sim.queue.length ? sim.queue.shift()! : sim.lastInput
-      sim.lastInput = input
-      // catch up if the client got ahead (packets are batched)
+      let input = sim.queue.length ? sim.queue.shift()! : sim.lastInput
+      // Catch up if the client got ahead (packets are batched). Every backlog frame
+      // has to be STEPPED. This used to re-step the same `input` on each pass and
+      // shift the queued frames straight into lastInput without ever simulating
+      // them, then publish a discarded frame's seq as lastSeq. The client prunes its
+      // replay buffer against lastSeq, so it dropped inputs the server never applied
+      // and its prediction diverged with no way back. Only bites when packets arrive
+      // in bursts, so it reads as the car getting glitchier the longer you drive.
       let extra = 0
       while (sim.queue.length > 6 && extra < 3) {
         stepCar(sim.car, input, sim.tuning, PHYS_DT, this.map.surfaceAt, this.map.colliders, this.map.heightAt)
         stepScore(sim.score, sim.car, PHYS_DT)
-        sim.lastInput = sim.queue.shift()!
+        input = sim.queue.shift()!
         extra++
       }
+      sim.lastInput = input
       stepCar(sim.car, input, sim.tuning, PHYS_DT, this.map.surfaceAt, this.map.colliders, this.map.heightAt)
       stepScore(sim.score, sim.car, PHYS_DT)
     }
@@ -520,6 +539,11 @@ export class DriftRoom extends Room<DriftState> {
     if (verdict === 'arrest') {
       for (const u of this.cops) u.brain.immunity.set(this.frozenId, ARREST_IMMUNITY)
     }
+    // The stop just spent up to CHAT_TIME_LIMIT_S with no input packets. Without
+    // this the player is already that stale the instant the sweep exemption lifts,
+    // and the next sweep drops them a second after being released.
+    const freed = this.sims.get(this.frozenId)
+    if (freed) freed.lastSeen = Date.now()
     this.broadcast('cop:verdict', { id: this.frozenId, verdict })
     this.interrogation = null
     this.frozenId = ''

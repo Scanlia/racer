@@ -570,6 +570,7 @@ async function boot(): Promise<void> {
       }
       stepScore(score, car, PHYS_DT)
       if (!frozen) net.sendInput(shapedInput)
+      else if (seq % 60 === 0) net.keepalive() // 1 Hz: silent, but not gone
       if (car.wallHit > 2.5) audio.crash(car.wallHit)
       // player list (self + remotes), refreshed twice a second
       if (seq % 30 === 0) {

@@ -302,6 +302,61 @@ export class World {
 
   // Instanced variant of placeClones for high-count vegetation: one InstancedMesh
   // per mesh part, per-instance lamp tint via instanceColor.
+  // A hedge run is one segment REPEATED along the tile, never one segment stretched to
+  // the full length. The old call scaled a 1x1 m piece to TILE+0.5 on one axis, so its
+  // texture smeared ~16x down the run, which is what made the hedges look bad. Instanced
+  // because the honest fix multiplies segment count and as individual clones that would
+  // be one draw call each; as one InstancedMesh it is fewer draw calls than the clones
+  // it replaces. Deliberately NOT placeInstanced: that applies a random 0.75-1.3x scale
+  // jitter, which is right for scattered bushes and wrong for a continuous wall that
+  // must not gap or step.
+  private placeHedgeRun(model: LoadedModel, props: Prop[], seg: { x: number; y: number; z: number }, runLength: number): void {
+    if (!props.length) return
+    const bbox = new THREE.Box3().setFromObject(model.object)
+    const size = bbox.getSize(new THREE.Vector3())
+    const center = bbox.getCenter(new THREE.Vector3())
+    const n = Math.max(1, Math.round(runLength / seg.z))
+    const step = runLength / n // exact division, so segments meet without a seam
+    const sx = seg.x / size.x, sy = seg.y / size.y, sz = step / size.z
+    const tint = new THREE.Color()
+    const m = new THREE.Matrix4()
+    const q = new THREE.Quaternion()
+    const up = new THREE.Vector3(0, 1, 0)
+    const off = new THREE.Matrix4()
+    const sc = new THREE.Matrix4()
+    const pos = new THREE.Vector3()
+    const one = new THREE.Vector3(1, 1, 1)
+    for (const part of model.meshes) {
+      const inst = new THREE.InstancedMesh(part.geometry, part.material, props.length * n)
+      let i = 0
+      for (const p of props) {
+        // the run extends along the prop's local +Z, the axis targetSize used to stretch
+        const dx = Math.sin(p.rot), dz = Math.cos(p.rot)
+        for (let k = 0; k < n; k++) {
+          const d = -runLength / 2 + (k + 0.5) * step
+          const wx = p.x + dx * d, wz = p.z + dz * d
+          q.setFromAxisAngle(up, p.rot)
+          pos.set(wx, this.map.heightAt(wx, wz), wz)
+          m.compose(pos, q, one)
+          off.makeTranslation(-center.x * sx, -bbox.min.y * sy, -center.z * sz)
+          sc.makeScale(sx, sy, sz)
+          m.multiply(off)
+          m.multiply(sc)
+          m.multiply(part.matrix)
+          inst.setMatrixAt(i, m)
+          // tint per segment, so a hedge passing a lamp lights along its length
+          this.lampTintAt(wx, wz, tint)
+          inst.setColorAt(i, tint)
+          i++
+        }
+      }
+      inst.instanceMatrix.needsUpdate = true
+      if (inst.instanceColor) inst.instanceColor.needsUpdate = true
+      inst.frustumCulled = false
+      this.group.add(inst)
+    }
+  }
+
   private placeInstanced(
     model: LoadedModel,
     props: Prop[],
@@ -442,7 +497,9 @@ export class World {
       if (!hedges.length) return
       const tex = await loadTexture('/assets/hedges/tex/hedge_open_bottom_summer.png')
       const model = await loadFBX('/assets/hedges/basic_1x1.fbx', tex)
-      this.placeClones(model, hedges, { targetSize: { x: 2.0, y: 2.2, z: TILE + 0.5 } })
+      // ~2 m per segment: near the piece's authored 1x1 proportions, so the texture
+      // reads at roughly its intended density instead of smeared down the whole run
+      this.placeHedgeRun(model, hedges, { x: 2.0, y: 2.2, z: 2.0 }, TILE + 0.5)
     })())
 
     // big trees: instanced pines (embedded texture GLB)

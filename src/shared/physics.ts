@@ -56,6 +56,9 @@ export interface AABB { minX: number; minZ: number; maxX: number; maxZ: number; 
 export type SurfaceSampler = (x: number, z: number) => SurfaceName
 export type HeightSampler = (x: number, z: number) => number
 
+// Below this speed the steering direction fades out instead of flipping sign.
+const STEER_DIR_FADE = 0.15 // m/s
+
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v)
 
 // tanh-shaped grip curve with post-peak falloff. slip in rad, peak in rad, returns -1..1 force factor.
@@ -153,7 +156,18 @@ export function stepCar(
   const loadR = Math.max((T.mass * g * a) / L + transfer, T.mass * g * 0.08)
 
   // --- slip angles ---
-  const slipF = Math.atan2(vLat + s.yawRate * a, absVLong) - delta * Math.sign(vLong >= 0 ? 1 : -1)
+  // Direction of travel SCALES the steering term rather than flipping with sign().
+  // Parked on full lock, vLong dithers either side of zero on idle creep, so a hard
+  // sign flip inverts the front lateral force almost every frame: 555 flips over 600
+  // stationary steps, leaving the car jittering ~0.06 rad while stopped. Fading out is
+  // also the physical answer, since a wheel that is not rolling generates no slip
+  // force. STEER_DIR_FADE is deliberately tiny so this only touches the degenerate
+  // near-standstill region: measured against this branch, a handbrake drift entry
+  // lands 8 mm from where it did before and a fast sweeping corner 1 mm, while the
+  // parked jitter goes to zero. (At 0.5 the same fix moved the drift entry 238 mm,
+  // which is why it is not that.)
+  const dir = clamp(vLong / STEER_DIR_FADE, -1, 1)
+  const slipF = Math.atan2(vLat + s.yawRate * a, absVLong) - delta * dir
   const slipR = Math.atan2(vLat - s.yawRate * b, absVLong)
   s.slipFront = slipF
   s.slipRear = slipR

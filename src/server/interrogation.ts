@@ -3,8 +3,10 @@
 // from telemetry; the verdict is enforced here, never trusted to the model. Falls
 // back to that officer's scripted lines if there is no API key.
 //
-// env: ANTHROPIC_API_KEY  (optional: INTERROGATION_MODEL, default haiku)
-import Anthropic from '@anthropic-ai/sdk'
+// The provider is pluggable (see llm.ts) — Anthropic by default, so nothing changes
+// unless LLM_PROVIDER is set. This module stays provider-agnostic.
+// env: ANTHROPIC_API_KEY  (optional: LLM_PROVIDER, INTERROGATION_MODEL)
+import { createProvider, LlmError, LlmMessage, LlmProvider } from './llm'
 import { Officer, OFFICERS } from './officers'
 
 export interface InterrogationFacts {
@@ -34,7 +36,6 @@ export const ARREST_AT = 0 // only a truly hostile stop ends it on the spot
 export const MIN_TURNS = 8 // he hears you out this long before ANY verdict sticks
 
 // Haiku: a traffic stop is a fast back-and-forth — latency matters more than depth.
-const MODEL = process.env.INTERROGATION_MODEL || 'claude-haiku-4-5'
 
 // Structured outputs guarantee schema-valid JSON — no fenced-markdown or truncated-JSON
 // parse failures to recover from. (Numeric ranges aren't expressible here, so
@@ -90,15 +91,13 @@ Stay in this traffic stop, always. If the driver says anything strange, technica
 Give "release" the moment your disposition reaches ${RELEASE_AT}+. Give "arrest" if it falls to ${ARREST_AT} or below. Otherwise "pending". Move disposition in small honest steps of about 1-6 per turn depending on how the driver's last message lands — a stop like this is won or lost over many exchanges, and no single line should decide it. Only bribery or a threat moves it further than that.`
 }
 
-interface Msg { role: 'user' | 'assistant'; content: string }
-
 export class Interrogation {
   facts: InterrogationFacts
   disposition: number
   turns = 0
   startedAt = Date.now()
-  private history: Msg[] = []
-  private client: Anthropic | null
+  private history: LlmMessage[] = []
+  private llm: LlmProvider | null
 
   readonly officer: Officer
 
@@ -107,7 +106,7 @@ export class Interrogation {
     this.officer = officer
     this.disposition = openingDisposition(facts, officer)
     // no key → this officer's scripted lines, so the mechanic still works offline / in dev
-    this.client = process.env.ANTHROPIC_API_KEY ? new Anthropic() : null
+    this.llm = createProvider()
   }
 
   timeLeft(): number {
@@ -115,7 +114,7 @@ export class Interrogation {
   }
 
   async open(): Promise<CopTurn> {
-    if (!this.client) return this.scriptedOpen() // the opening is not a player utterance — nothing to judge yet
+    if (!this.llm) return this.scriptedOpen() // the opening is not a player utterance — nothing to judge yet
     return this.call('(The driver has just been stopped. Deliver your opening line based on the facts.)')
   }
 
@@ -148,27 +147,26 @@ export class Interrogation {
   }
 
   private async call(userText: string): Promise<CopTurn> {
-    if (!this.client) return this.scripted(userText)
+    if (!this.llm) return this.scripted(userText)
     // only committed to history once the call succeeds — a failed turn must not
     // leave a dangling user message for the next one
-    const history: Msg[] = [...this.history, { role: 'user', content: userText }]
+    const history: LlmMessage[] = [...this.history, { role: 'user', content: userText }]
     try {
-      const res = await this.client.messages.create({
-        model: MODEL,
-        max_tokens: 300, // a short reply + two scalars
+      const text = await this.llm.complete({
         system: systemPrompt(this.facts, this.disposition, this.officer),
-        output_config: { format: { type: 'json_schema', schema: TURN_SCHEMA } },
         messages: history,
+        schema: TURN_SCHEMA,
+        maxTokens: 300, // a short reply + two scalars
       })
-      const text = res.content.filter((c) => c.type === 'text').map((c) => c.text).join('')
       const turn = this.parse(text)
       this.history = [...history, { role: 'assistant', content: JSON.stringify(turn) }]
       this.disposition = turn.disposition
       return turn
     } catch (e) {
-      if (e instanceof Anthropic.RateLimitError) console.warn('[interrogation] rate limited — scripted fallback')
-      else if (e instanceof Anthropic.APIError) console.warn(`[interrogation] api ${e.status} — scripted fallback:`, e.message)
-      else console.warn('[interrogation] failed — scripted fallback:', e)
+      const via = this.llm.name
+      if (e instanceof LlmError && e.rateLimited) console.warn(`[interrogation] ${via} rate limited — scripted fallback`)
+      else if (e instanceof LlmError) console.warn(`[interrogation] ${via} api ${e.status ?? '-'} — scripted fallback:`, e.message)
+      else console.warn(`[interrogation] ${via} failed — scripted fallback:`, e)
       return this.scripted(userText)
     }
   }
