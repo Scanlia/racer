@@ -4,8 +4,12 @@ import { cpSync, mkdirSync, existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const out = join(root, 'game', 'public', 'assets')
+// The packs used to live beside the repo (<root>/game + <root>/3d models); they are
+// now vendored in assets-src/, so this resolves inside the repo and `npm run assets`
+// works from a fresh clone.
+const repo = join(dirname(fileURLToPath(import.meta.url)), '..')
+const root = join(repo, 'assets-src')
+const out = join(repo, 'public', 'assets')
 
 const copies = [
   // roads (updated pack: includes signs + embedded textures)
